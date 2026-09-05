@@ -1,0 +1,28 @@
+{
+  "name": "folio-mcp-workspace",
+  "private": true,
+  "description": "Open-source Folio client, MCP server and CLI.",
+  "license": "MIT",
+  "author": "Christian Bru (https://bruchris.me)",
+  "workspaces": [
+    "packages/folio-mcp"
+  ],
+  "scripts": {
+    "auth:folio": "node node_modules/tsx/dist/cli.mjs packages/folio-mcp/src/auth.ts",
+    "http:folio": "node node_modules/tsx/dist/cli.mjs packages/folio-mcp/src/http.ts",
+    "test": "npm run test --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "build": "npm run build --workspaces --if-present",
+    "test:tooling": "node --test scripts/tests/*.test.mjs",
+    "check:secrets": "node scripts/secret-scan.mjs",
+    "release:smoke": "node scripts/release-smoke.mjs",
+    "check:public": "node scripts/check-public-boundary.mjs"
+  },
+  "engines": {
+    "node": ">=22.14.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bruchris/folio-mcp.git"
+  }
+}
