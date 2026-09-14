@@ -30,8 +30,29 @@ function runSmoke(context, args = []) {
     child.on('error', reject); child.on('close', (code, signal) => resolve({ code, signal, output }));
   });
 }
+function failureSummary(output) {
+  const stages = new Set(['Clean tarball install']);
+  for (const vendor of ['folio', 'fiken']) {
+    const name = `@bruchris/${vendor}-mcp`;
+    for (const stage of [`npm pack ${name}`, `${name} /client import`, `${name} CLI --help without credentials`]) stages.add(stage);
+    for (const command of ['attach', 'finish', 'complete', 'uncomplete', 'purchase', 'delete-purchase']) stages.add(`${name} CLI missing --confirm: ${command}`);
+    for (const field of ['date', 'account', 'nok']) stages.add(`${name} paid CLI missing --payment-${field}`);
+  }
+  const npmCodes = new Set(['EAI_AGAIN', 'ECONNRESET', 'ETIMEDOUT', 'ECONNREFUSED', 'ENOTFOUND', 'EINTEGRITY',
+    'ENOENT', 'EACCES', 'EPERM', 'EBUSY', 'ENOSPC', 'ELOCKVERIFY', 'EUSAGE', 'E404', 'E401', 'E403', 'ERESOLVE', 'ENOVERSIONS', 'ENOTEMPTY']);
+  // Never forward npm/package output or arbitrary exception messages. Even diagnostic
+  // code fields are allowlisted; filesystem paths and payloads remain undisclosed.
+  for (const line of output.slice(-8192).split(/\r?\n/)) {
+    const command = /^Release smoke failed: (.+) failed \((timeout|[0-9]{1,10}|SIGTERM|SIGKILL)\)(?:: ([A-Z0-9_]{1,40}))?\.$/.exec(line);
+    if (command && stages.has(command[1])) return [command[1], command[2], ...(npmCodes.has(command[3]) ? [command[3]] : [])].join('; ');
+    const filesystem = /^Release smoke failed: (EPERM|EBUSY|ENOTEMPTY|EACCES|ENOSPC|ENOENT):/.exec(line);
+    if (filesystem) return `filesystem; ${filesystem[1]}`;
+    if (line === 'Release smoke failed: MCP handshake timed out.') return 'MCP handshake; timeout';
+  }
+  return 'unclassified child failure';
+}
 function assertPassed(result, vendors) {
-  assert.equal(result.code, 0, 'Configured package smoke failed; diagnostic payloads withheld.');
+  if (result.code !== 0) assert.fail(`Configured package smoke failed (${failureSummary(result.output)}); diagnostic payloads withheld.`);
   for (const vendor of ['folio', 'fiken']) {
     const marker = `@bruchris/${vendor}-mcp: tarball, isolated install, client, CLI, MCP passed`;
     assert.equal(result.output.includes(marker), vendors.includes(vendor), 'Smoke must verify exactly the configured vendors.');
@@ -54,6 +75,24 @@ async function fixture(config, check) {
   }
 }
 function vendorConfig(vendor) { return { publicationScope: 'vendor-mcp', vendor, repository: `bruchris/${vendor}-mcp`, appSourceVisibility: 'private' }; }
+
+test('smoke failures report a bounded stage and status without exposing child diagnostics', () => {
+  const cases = [
+    ['Release smoke failed: Clean tarball install failed (timeout): ETIMEDOUT.\nsynthetic-private-payload', 'Clean tarball install; timeout; ETIMEDOUT'],
+    ['Release smoke failed: @bruchris/fiken-mcp /client import failed (86).', '@bruchris/fiken-mcp /client import; 86'],
+    ["Release smoke failed: EPERM: operation not permitted, unlink 'C:\\synthetic-private-payload'", 'filesystem; EPERM'],
+    ['Release smoke failed: Clean tarball install failed (1): SYNTHETIC_PRIVATE_PAYLOAD.', 'Clean tarball install; 1'],
+    ['Release smoke failed: synthetic-private-payload', 'unclassified child failure'],
+  ];
+  for (const [output, summary] of cases) {
+    assert.throws(() => assertPassed({ code: 1, output }, []), error => {
+      assert.equal(error.message, `Configured package smoke failed (${summary}); diagnostic payloads withheld.`);
+      assert.ok(!error.message.includes('synthetic-private-payload'));
+      assert.ok(!error.message.includes('SYNTHETIC_PRIVATE_PAYLOAD'));
+      return true;
+    });
+  }
+});
 
 // Build every configured package before exercising its actual installed surface.
 test('configured tarballs install cleanly and expose clients, safe CLI commands, and MCP tools', { timeout: 360_000 }, async context => {
