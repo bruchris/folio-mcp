@@ -3,6 +3,27 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 
+type ListenMcpHttpOptions = {
+  name: string;
+  token: string;
+  port: number;
+  host?: string;
+  allowedOrigins?: string[];
+  landingHtml?: string;
+  log?: (line: string) => void;
+  createServer: () => McpServer | Promise<McpServer>;
+};
+
+const JSON_RPC_INTERNAL_ERROR = JSON.stringify({
+  jsonrpc: "2.0",
+  error: { code: -32603, message: "Internal server error" },
+  id: null,
+});
+
+export function redactAuthorization(line: string): string {
+  return line.replace(/Bearer\s+\S+/gi, "Bearer [redacted]");
+}
+
 export function authorizationMatches(header: string | undefined, expected: string): boolean {
   const prefix = "Bearer ";
   if (!header?.startsWith(prefix) || !expected) return false;
@@ -20,40 +41,66 @@ function corsHeaders(origin?: string): Record<string, string> {
   };
 }
 
-export function listenMcpHttp(options: {
-  name: string;
-  token: string;
-  port: number;
-  host?: string;
-  allowedOrigins?: string[];
-  createServer: () => McpServer | Promise<McpServer>;
-}): Promise<{ close: () => void; port: number }> {
+function parseRequestUrl(req: IncomingMessage): URL | undefined {
+  try {
+    return new URL(req.url ?? "/", "http://127.0.0.1");
+  } catch {
+    return undefined;
+  }
+}
+
+function logToStderr(line: string): void {
+  process.stderr.write(`${line}\n`);
+}
+
+export function listenMcpHttp(options: ListenMcpHttpOptions): Promise<{ close: () => void; port: number }> {
+  const sink = options.log ?? logToStderr;
+
+  function writeLog(line: string): void {
+    sink(redactAuthorization(line));
+  }
+
+  function logRequest(req: IncomingMessage, path: string, status: number): void {
+    writeLog(`[${options.name}] ${req.method ?? "GET"} ${path} ${status}`);
+  }
+
   const http = createServer(async (req: IncomingMessage, res: ServerResponse) => {
-    let url: URL;
-    try { url = new URL(req.url ?? "/", "http://127.0.0.1"); } catch {
+    const url = parseRequestUrl(req);
+    if (!url) {
       res.writeHead(400).end("bad request target");
       return;
     }
     if (req.method === "GET" && url.pathname === "/healthz") {
       res.writeHead(200, { "content-type": "text/plain" }).end("ok");
+      logRequest(req, "/healthz", 200);
+      return;
+    }
+    if (req.method === "GET" && url.pathname === "/" && options.landingHtml) {
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" }).end(options.landingHtml);
+      logRequest(req, "/", 200);
       return;
     }
     if (url.pathname !== "/mcp") {
       res.writeHead(404).end();
+      logRequest(req, url.pathname, 404);
       return;
     }
     const origin = req.headers.origin;
     if (origin !== undefined && !options.allowedOrigins?.includes(origin)) {
       res.writeHead(403).end("forbidden origin");
+      logRequest(req, "/mcp", 403);
       return;
     }
-    for (const [key, value] of Object.entries(corsHeaders(origin))) res.setHeader(key, value);
+    const cors = corsHeaders(origin);
+    for (const [key, value] of Object.entries(cors)) res.setHeader(key, value);
     if (req.method === "OPTIONS") {
-      res.writeHead(204, corsHeaders(origin)).end();
+      res.writeHead(204, cors).end();
+      logRequest(req, "/mcp", 204);
       return;
     }
     if (!authorizationMatches(req.headers.authorization, options.token)) {
-      res.writeHead(401, { "www-authenticate": "Bearer", ...corsHeaders(origin) }).end("unauthorized");
+      res.writeHead(401, { "www-authenticate": "Bearer", ...cors }).end("unauthorized");
+      logRequest(req, "/mcp", 401);
       return;
     }
     try {
@@ -63,13 +110,12 @@ export function listenMcpHttp(options: {
       });
       await mcp.connect(transport);
       await transport.handleRequest(req, res);
+      logRequest(req, "/mcp", res.statusCode || 200);
     } catch {
-      const message = "Internal server error";
       if (!res.headersSent) {
-        res.writeHead(500, { "content-type": "application/json" }).end(
-          JSON.stringify({ jsonrpc: "2.0", error: { code: -32603, message }, id: null }),
-        );
+        res.writeHead(500, { "content-type": "application/json" }).end(JSON_RPC_INTERNAL_ERROR);
       }
+      logRequest(req, "/mcp", 500);
     }
   });
   return new Promise((resolve, reject) => {
@@ -78,9 +124,7 @@ export function listenMcpHttp(options: {
     http.listen(options.port, host, () => {
       const addr = http.address();
       const port = typeof addr === "object" && addr ? addr.port : options.port;
-      process.stderr.write(
-        `[${options.name}] HTTP MCP on ${host}:${port} (POST/GET /mcp, GET /healthz)\n`,
-      );
+      writeLog(`[${options.name}] HTTP MCP on ${host}:${port} (GET /, GET /healthz, POST/GET /mcp)`);
       resolve({
         port,
         close: () => http.close(),

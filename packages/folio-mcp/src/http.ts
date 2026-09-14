@@ -1,9 +1,16 @@
 #!/usr/bin/env node
 import { createServer } from "./server.js";
 import { folioClientFromEnv, loadEnvFiles } from "./env.js";
+import { renderFolioLandingPage } from "./landing.js";
 import { listenMcpHttp, requireMcpAuthToken } from "./mcp-http.js";
 
-async function main() {
+function allowedOriginsFromEnv(): string[] | undefined {
+  return process.env.MCP_ALLOWED_ORIGINS?.split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+}
+
+async function main(): Promise<void> {
   loadEnvFiles();
   const token = requireMcpAuthToken();
   const port = Number(process.env.PORT ?? 3000);
@@ -14,8 +21,9 @@ async function main() {
     token,
     host,
     port,
+    landingHtml: renderFolioLandingPage(),
     createServer: () => createServer(folio, { allowLocalFiles: false }),
-    allowedOrigins: process.env.MCP_ALLOWED_ORIGINS?.split(",").map((origin) => origin.trim()).filter(Boolean),
+    allowedOrigins: allowedOriginsFromEnv(),
   });
 }
 

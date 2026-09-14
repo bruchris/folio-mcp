@@ -1,6 +1,6 @@
 # Owner-hosted Folio MCP
 
-The HTTP entrypoint is an always-on Node server. Use a VPS or Docker host with TLS; it cannot run unchanged as a Vercel function or Cloudflare Worker. Routes are GET /healthz and Streamable HTTP /mcp. The vendor domain and tenant-aware OAuth are not yet deployed.
+The HTTP entrypoint is an always-on Node server. Use a VPS or Docker host with TLS; it cannot run unchanged as a Vercel function or Cloudflare Worker. Routes are GET / (landing), GET /healthz and Streamable HTTP /mcp. The vendor domain and tenant-aware OAuth are not yet deployed.
 
 ## API-key mode
 
